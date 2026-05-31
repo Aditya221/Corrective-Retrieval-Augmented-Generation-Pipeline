@@ -1,0 +1,10 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+pydantic==2.6.4
+sentence-transformers==2.5.1
+openai>=1.30.0
+python-dotenv==1.0.1
+numpy<2.0.0
+# Force CPU-only PyTorch to keep Docker image < 1GB
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.1
