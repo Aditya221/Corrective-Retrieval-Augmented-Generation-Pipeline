@@ -1,3 +1,7 @@
+[![GitHub Stars](https://img.shields.io/github/stars/Aditya221/Corrective-Retrieval-Augmented-Generation-Pipeline?style=social)](https://github.com/Aditya221/Corrective-Retrieval-Augmented-Generation-Pipeline)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
 # CRAG: Corrective Retrieval-Augmented Generation Pipeline
 
 A production-grade retrieval system combining hardware-accelerated vector search with cross-encoder validation and LLM-powered query rewriting. Built from first principles using PyTorch, validated against BEIR benchmarks with sub-100ms end-to-end latency.
