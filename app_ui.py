@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 import torch
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
 from openai import OpenAI
 
 # Import your CRAG components
@@ -120,12 +120,27 @@ st.markdown("""
 # Initialize session state
 if "pipeline_initialized" not in st.session_state:
     st.session_state.pipeline_initialized = False
-    st.session_state.embedder = None
+    st.session_state.embedder_model = None
+    st.session_state.embedder_tokenizer = None
     st.session_state.memory = None
     st.session_state.evaluator = None
     st.session_state.rewriter = None
     st.session_state.groq_client = None
     st.session_state.query_history = []
+
+# ============================================================================
+# EMBEDDING FUNCTION (using transformers directly)
+# ============================================================================
+
+def embed_text(texts: List[str], model, tokenizer) -> np.ndarray:
+    """Generate embeddings using HuggingFace transformers."""
+    encoded_input = tokenizer(texts, padding=True, truncation=True, return_tensors='pt')
+    
+    with torch.no_grad():
+        model_output = model(**encoded_input)
+        embeddings = model_output.last_hidden_state.mean(dim=1)
+    
+    return embeddings.numpy().astype(np.float32)
 
 # ============================================================================
 # COMPONENT INITIALIZATION
@@ -136,8 +151,11 @@ def initialize_pipeline():
     """Load all CRAG components (cached to avoid reloading)."""
     with st.spinner("🔧 Initializing CRAG Pipeline..."):
         try:
-            # 1. Embedder
-            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            # 1. Load embedder using transformers
+            st.info("Loading embedder model...")
+            model_name = "sentence-transformers/all-MiniLM-L6-v2"
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModel.from_pretrained(model_name)
             
             # 2. Matrix Memory with mock data
             memory = MatrixVectorMemory(embedding_dim=384)
@@ -153,8 +171,10 @@ def initialize_pipeline():
                 "API documentation is essential for effective software integration.",
                 "Cloud computing provides on-demand access to computing resources over the internet.",
             ]
-            mock_embeddings = embedder.encode(mock_chunks).tolist()
-            memory.add_documents(mock_chunks, mock_embeddings)
+            
+            st.info("Embedding documents...")
+            mock_embeddings = embed_text(mock_chunks, model, tokenizer)
+            memory.add_documents(mock_chunks, mock_embeddings.tolist())
             
             # 3. Evaluator
             evaluator = CrossEncoderEvaluator()
@@ -165,7 +185,7 @@ def initialize_pipeline():
             # 5. Groq Client
             groq_api_key = os.environ.get("GROQ_API_KEY")
             if not groq_api_key:
-                st.warning("⚠️ GROQ_API_KEY not found. Query rewriting will fail. Please set it in your .env file.")
+                st.warning("⚠️ GROQ_API_KEY not found. Query rewriting will fail. Please set it in your secrets.")
                 groq_client = None
             else:
                 groq_client = OpenAI(
@@ -174,7 +194,8 @@ def initialize_pipeline():
                 )
             
             st.session_state.pipeline_initialized = True
-            st.session_state.embedder = embedder
+            st.session_state.embedder_model = model
+            st.session_state.embedder_tokenizer = tokenizer
             st.session_state.memory = memory
             st.session_state.evaluator = evaluator
             st.session_state.rewriter = rewriter
@@ -204,15 +225,15 @@ class PipelineTrace:
     synthesis_latency_ms: float = 0.0
     total_latency_ms: float = 0.0
 
-def execute_retrieval_and_eval(search_query: str, embedder, memory, evaluator):
+def execute_retrieval_and_eval(search_query: str, model, tokenizer, memory, evaluator):
     """Step 1: Retrieve + Evaluate."""
     t0 = time.perf_counter()
     
     # Encode query
-    query_vector = embedder.encode(search_query).tolist()
+    query_embedding = embed_text([search_query], model, tokenizer)
     
     # Retrieve
-    raw_results = memory.retrieve([query_vector], top_k=3)[0]
+    raw_results = memory.retrieve(query_embedding.tolist(), top_k=3)[0]
     
     if not raw_results:
         retrieval_latency = (time.perf_counter() - t0) * 1000
@@ -258,7 +279,8 @@ def generate_final_answer(query: str, valid_chunks: List[str], groq_client):
 
 def run_crag_pipeline(user_query: str) -> PipelineTrace:
     """Execute the full CRAG pipeline and return a trace."""
-    embedder = st.session_state.embedder
+    model = st.session_state.embedder_model
+    tokenizer = st.session_state.embedder_tokenizer
     memory = st.session_state.memory
     evaluator = st.session_state.evaluator
     rewriter = st.session_state.rewriter
@@ -266,7 +288,7 @@ def run_crag_pipeline(user_query: str) -> PipelineTrace:
     
     # STEP 1: Initial retrieval + evaluation
     initial_results, initial_retrieval_ms, initial_grades = execute_retrieval_and_eval(
-        user_query, embedder, memory, evaluator
+        user_query, model, tokenizer, memory, evaluator
     )
     
     trace = PipelineTrace(
@@ -300,7 +322,7 @@ def run_crag_pipeline(user_query: str) -> PipelineTrace:
         # STEP 3: Re-retrieve with rewritten query
         if trace.rewritten_query and not trace.rewritten_query.startswith("["):
             secondary_results, secondary_retrieval_ms, secondary_grades = execute_retrieval_and_eval(
-                trace.rewritten_query, embedder, memory, evaluator
+                trace.rewritten_query, model, tokenizer, memory, evaluator
             )
             trace.secondary_retrieval_ms = secondary_retrieval_ms
             trace.secondary_grades = secondary_grades
@@ -474,7 +496,7 @@ if user_query:
         # Step-by-step visualization
         st.markdown("#### Step-by-Step Breakdown")
         
-        # Step 1: Retrieval
+        # Step 1
         st.markdown("""
             <div class='pipeline-step'>
                 <span class='step-number'>1</span>
@@ -493,7 +515,7 @@ if user_query:
                              len(trace.initial_grades['INCORRECT']))
             st.markdown(f"**Retrieved:** `{total_retrieved} chunks`")
         
-        # Step 2: Evaluation
+        # Step 2
         st.markdown("""
             <div class='pipeline-step'>
                 <span class='step-number'>2</span>
@@ -511,7 +533,7 @@ if user_query:
         with col4:
             st.markdown(f"**INCORRECT:** `{len(trace.initial_grades['INCORRECT'])}`")
         
-        # Step 3: Decision Point
+        # Step 3 (conditional)
         if trace.was_rewritten:
             st.markdown("""
                 <div class='pipeline-step' style='border-left-color: #ffc107;'>
